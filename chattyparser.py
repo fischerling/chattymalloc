@@ -394,7 +394,7 @@ if __name__ == "__main__":
         )
         sys.exit(0)
 
-    parser = argparse.ArgumentParser(description="parse and analyse chattymalloc traces")
+    parser = argparse.ArgumentParser(description="parse and analyze chattymalloc traces")
     parser.add_argument("trace",
                         help="binary trace file created by chattymalloc")
     parser.add_argument("--alignment",
