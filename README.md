@@ -1,4 +1,4 @@
-# chattymalloc - a performant shared library based memory allocator tracer
+# chattymalloc - a high-performance shared library based malloc tracer
 
 ## Dependencies
 
