@@ -1,4 +1,4 @@
-# chattymalloc - a shared library to trace memory allocators
+# chattymalloc - a performant shared library based memory allocator tracer
 
 ## Dependencies
 
@@ -7,7 +7,9 @@
 
 ## Compilation
 
-Clone the repository and run `make`.
+Clone the repository.
+`git clone https://muhq.space/software/chattymalloc.git`
+Build chattymalloc by running  `make` in the repository root.
 
 ## Usage
 
