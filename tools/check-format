@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pretty fancy method to get reliable the absolute path of a shell
+# script, *even if it is sourced*. Credits go to GreenFox on
+# stackoverflow: http://stackoverflow.com/a/12197518/194894
+pushd . > /dev/null
+SCRIPTDIR="${BASH_SOURCE[0]}";
+while([ -h "${SCRIPTDIR}" ]); do
+    cd "`dirname "${SCRIPTDIR}"`"
+    SCRIPTDIR="$(readlink "`basename "${SCRIPTDIR}"`")";
+done
+cd "`dirname "${SCRIPTDIR}"`" > /dev/null
+SCRIPTDIR="`pwd`";
+popd  > /dev/null
+
+ROOTDIR=$(readlink -f "${SCRIPTDIR}/..")
+
+MAX_PROCS=$(nproc)
+
+# Note that the --dry-run and --Werror clang-format arguments require
+# clang-format 10 or higher. See https://reviews.llvm.org/D68554
+find "${ROOTDIR}" -path "${ROOTDIR}/build*" -prune -o \
+	-type f -name '*.[c|h|cpp]' -print0 |\
+	xargs --null --max-args=3 --max-procs="${MAX_PROCS}" \
+		  clang-format --style=file --dry-run -Werror

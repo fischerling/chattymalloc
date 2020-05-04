@@ -1,0 +1,2 @@
+Checks: bugprone-*, cert-*, linuxkernel-*, modernize-*, performance-*, portability-*, readability-*,-readability-isolate-declaration
+WarningsAsErrors: clang-*, readability-*, performance-*
