@@ -9,14 +9,14 @@
 
 Clone the repository.
 `git clone https://muhq.space/software/chattymalloc.git`
+
 Build chattymalloc by running  `make` in the repository root.
 
 ## Usage
 
 chattymalloc is designed to be used with the LD_PRELOAD mechanism.
 It hooks the memory allocator API and saves each allocator call and its result
-to a memory mapped binary file which will be stored to the current directory
-with the name `chattymalloc.trace`.
+to a memory mapped binary file, called chattymalloc.trace, which will be stored to the current directory.
 
 `env LD_PRELOAD=/path/to/libchattymalloc.so <your-binary>`
 
@@ -26,7 +26,7 @@ chattyparser.py.
 # chattyparser - a parser and plotter for chattymalloc trace files
 
 chattyparser parses a trace file, detects allocator and application misbehavior,
-like double frees, produces plain text trace, a histogram and a memory profile.
+like double frees, produces a plain text trace, a histogram and a memory profile.
 
 ## Usage
 	usage: chattyparser.py [-h] [--alignment ALIGNMENT ALIGNMENT] [--txt] [-v]
