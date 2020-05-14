@@ -75,7 +75,7 @@ class Trace:
             var_arg = hex(self.var_arg)
         else:
             var_arg = self.var_arg
-        return f"{self.tid}: {self.depth} {self.func.name} {hex(self.ptr)} {self.size} {var_arg}"
+        return f"{self.tid}: {self.func.name} {hex(self.ptr)} {self.size} {var_arg}"
 
 def update_cache_lines(cache_lines, trace, size):
     """mark or unmark all cache lines spanned by this allocation"""
