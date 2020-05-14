@@ -161,6 +161,8 @@ def record_allocation(trace, context):
                 msg = f"WARNING: free of invalid pointer {freed_ptr:x}\n"
             else:
                 size = allocations.pop(freed_ptr) * -1
+                if trace.func == Function.free:
+                    trace.var_arg = -1 * size
                 msg = update_cache_lines(cache_lines, trace, size)
 
     # allocations
