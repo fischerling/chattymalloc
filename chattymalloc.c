@@ -39,7 +39,7 @@ along with chattymalloc.  If not, see <http://www.gnu.org/licenses/>.
 #define BOOTSTRAP_MEMORY_SIZE 4096
 
 #define GROWTH_THRESHOLD 4096
-#define GROWTH_ENTRIES 100000
+#define GROWTH_ENTRIES 1000000
 
 // flag to stop recursion during bootstrap
 static int initializing = 0;
@@ -62,7 +62,11 @@ static volatile uint64_t total_entries = 0;
 static pthread_cond_t growing;
 static pthread_mutex_t growth_mutex;
 
-static __thread pid_t tid = 0;
+// tid can be in a tri-state
+// -1  : means not initialized yet
+//  0  : means after the thread destructor ran
+// > 1 : the tid of the alive thread
+static __thread pid_t tid = -1;
 
 // thread specific key to register a destructor
 static pthread_key_t tls_key;
@@ -152,8 +156,16 @@ static void grow_trace() {
 }
 
 static void write_trace(char func, void *ptr, size_t size, size_t var_arg) {
-	if (unlikely(tid == 0)) {
+	// Copy tid on the stack to prevent the compiler from using multiple expensive tls reads
+	pid_t ltid = tid;
+
+	if (unlikely(ltid == 0)) {
+		return;
+	}
+
+	if (unlikely(ltid == -1)) {
 		init_thread();
+		ltid = tid;
 	}
 
 	uint64_t idx = __atomic_fetch_add(&next_entry, 1, __ATOMIC_SEQ_CST);
@@ -170,7 +182,7 @@ static void write_trace(char func, void *ptr, size_t size, size_t var_arg) {
 
 	volatile trace_t *trace = &out[(idx / GROWTH_ENTRIES) % 2][idx];
 
-	trace->tid = tid;
+	trace->tid = ltid;
 	trace->func = func;
 	trace->ptr = ptr;
 	trace->size = size;
@@ -179,6 +191,8 @@ static void write_trace(char func, void *ptr, size_t size, size_t var_arg) {
 
 static void log_thread_termination(void *key __attribute__((unused))) {
 	write_trace(THREAD_TERMINATION, NULL, 0, 0);
+	/* Don't write any traces after thread ressources are deallocated */
+	tid = 0;
 }
 
 static void trim_trace() {
@@ -273,7 +287,12 @@ void *malloc(size_t size) {
 }
 
 void free(void *ptr) {
-	// something wrong if we call free before one of the allocators!
+	// This is needed if we fail during init for example when our trace file can't be opened
+	if (unlikely(initializing) && ptr == 0) {
+		return;
+	}
+
+	// something is fishy if we call free before one of the allocating functions!
 	if (unlikely(next_malloc == NULL)) {
 		init();
 	}
