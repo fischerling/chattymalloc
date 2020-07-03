@@ -1,0 +1,21 @@
+image: "flowdalic/debian-dev:1.4"
+
+before_script:
+  - |
+    TOOLS="cc c++ clang clang++ gcc g++ clang-tidy clang meson"
+    for tool in $TOOLS; do
+      echo "$tool version"
+      $tool --version
+    done
+
+stages:
+  - build
+  - test
+
+build:
+  stage: build
+  script: make
+
+check-format:
+  stage: test
+  script: make check
