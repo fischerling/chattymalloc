@@ -27,8 +27,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-CHECK_ALIGNMENT = None
-EXPORT_TXT = False
+HEADER_SIZE = 0
 
 
 class Function(Enum):
@@ -77,13 +76,21 @@ class Trace:
             var_arg = self.var_arg
         return f"{self.tid}: {self.func.name} {hex(self.ptr)} {self.size} {var_arg}"
 
-def update_cache_lines(cache_lines, trace, size):
+    def get_size(self):
+        """return fully calculated size of this allocation trace"""
+        if self.func == Function.calloc:
+            return self.var_arg * self.size
+
+        return self.size
+
+
+def update_cache_lines(cache_lines, trace):
     """mark or unmark all cache lines spanned by this allocation"""
     if cache_lines is None:
         return ""
 
     start = trace.ptr
-    end = start + abs(size)
+    end = start + abs(trace.get_size())
     msg = ""
 
     cache_line = start & ~(64 - 1)
@@ -95,8 +102,10 @@ def update_cache_lines(cache_lines, trace, size):
             # false sharing
             else:
                 if trace.tid not in cache_lines[cache_line]:
-                    msg += (f"WARNING: cache line {hex(cache_line)} is shared "
-                            f"between {set(cache_lines[cache_line] + [trace.tid])}\n")
+                    msg += (
+                        f"WARNING: cache line {hex(cache_line)} is shared "
+                        f"between {set(cache_lines[cache_line] + [trace.tid])}\n"
+                    )
                 cache_lines[cache_line].append(trace.tid)
         else:
             if trace.tid in cache_lines[cache_line]:
@@ -116,14 +125,24 @@ def update_cache_lines(cache_lines, trace, size):
     return msg
 
 
+def check_overlap(allocations, trace, header=HEADER_SIZE):
+    """Check if any byte from trace overlaps with a different active allocation plus its header"""
+    assert trace.func != Function.free
+
+    for byte in range(trace.ptr + 8 - header, trace.ptr + trace.get_size(), 8):
+        if byte in allocations:
+            return "ERROR: allocation {trace} overlaps with an active allocation at {byte}"
+
+    return ""
+
+
 def record_allocation(trace, context):
     """add allocation to histogram or total requested memory
 
        trace - Trace object ro record
        context - dict holding all data structures used for parsing
            allocations - dict of life allocations mapping their pointer to their size
-           hist - dict mapping allocation sizes to their occurrence
-           realloc_hist - dict mapping the two realloc sizes to their occurence
+           hists - dict mapping allocation sizes to their occurrence
            total_size - list of total requested memory till last recorded function call
            cache_lines - dict of cache lines mapped to the owning tids
            req_size - dict mapping sizes to their individual total requested memory
@@ -133,8 +152,7 @@ def record_allocation(trace, context):
     allocations = context.setdefault("allocations", [])
 
     # optional
-    hist = context.get("hist", None)
-    realloc_hist = context.get("realloc_hist", None)
+    hists = context.get("hists", None)
     total_size = context.get("total_size", None)
     cache_lines = context.get("cache_lines", None)
     req_sizes = context.get("req_sizes", {})
@@ -163,20 +181,19 @@ def record_allocation(trace, context):
                 size = allocations.pop(freed_ptr) * -1
                 if trace.func == Function.free:
                     trace.var_arg = -1 * size
-                msg = update_cache_lines(cache_lines, trace, size)
+                msg = update_cache_lines(cache_lines, trace)
 
     # allocations
     if trace.func != Function.free and trace.ptr != 0:
         # check for alignment
         if CHECK_ALIGNMENT:
             if (trace.ptr - CHECK_ALIGNMENT[1]) % CHECK_ALIGNMENT[0] != 0:
-                msg += (f"WARNING: ptr: {trace.ptr:x} is not aligned to"
-                        f" {CHECK_ALIGNMENT[0]} with offset {CHECK_ALIGNMENT[1]}\n")
+                msg += (
+                    f"WARNING: ptr: {trace.ptr:x} is not aligned to"
+                    f" {CHECK_ALIGNMENT[0]} with offset {CHECK_ALIGNMENT[1]}\n"
+                )
 
-        if trace.func == Function.calloc:
-            allocation_size = trace.var_arg * trace.size
-        else:
-            allocation_size = trace.size
+        allocation_size = trace.get_size()
 
         # realloc returning the same pointer will not be reported because it has been freed already
         if trace.ptr in allocations:
@@ -184,17 +201,18 @@ def record_allocation(trace, context):
 
         allocations[trace.ptr] = allocation_size
 
-        msg += update_cache_lines(cache_lines, trace, allocation_size)
+        msg += update_cache_lines(cache_lines, trace)
+        if CHECK_OVERLAP:
+            msg += check_overlap(allocations, trace)
 
         # update hist
-        if hist is not None and trace.func != Function.free:
-            hist[allocation_size] = hist.get(allocation_size, 0) + 1
-
-        # special case realloc
-        if trace.func == Function.realloc:
-            if realloc_hist is not None:
-                realloc_hist[(size, allocation_size)] = realloc_hist.get(
-                    (size, allocation_size), 0)
+        if hists is not None and trace.func != Function.free:
+            hist = hists[trace.func]
+            if trace.func == Function.realloc:
+                hist[(size, allocation_size)] = hist.get(
+                    (size, allocation_size), 0) + 1
+            else:
+                hist[allocation_size] = hist.get(allocation_size, 0) + 1
 
         size += allocation_size
 
@@ -212,15 +230,14 @@ def record_allocation(trace, context):
 
 
 def parse(path="chattymalloc.txt",
-          hist=True,
+          hists=True,
           track_total=True,
           track_calls=True,
-          realloc_hist=True,
-          cache_lines=True,
+          cache_lines=False,
           req_sizes=None):
     """parse a chattymalloc trace
 
-    :returns: a context dict containing the histogram, a realloc histogram,
+    :returns: a context dict containing allocation size histograms per traced function,
               a function call histogram, total live memory per function call,
               a dict mapping cache_lines to their owning TIDs
     """
@@ -242,20 +259,16 @@ def parse(path="chattymalloc.txt",
         # allocation sizes to track
         context["req_sizes"] = req_sizes
 
-    if hist:
-        # Dictionary mapping allocation sizes to the count
-        context["hist"] = {}
-
-    if realloc_hist:
-        # Dictionary mapping realloc sizes to their count
-        context["realloc_hist"] = {}
+    if hists:
+        # Dictionary mapping functions to allocation sizes and their count
+        context["hists"] = {f: {} for f in Function if f != Function.free}
 
     if cache_lines:
         # Dictionary mapping cache lines to their owning TIDs
         context["cache_lines"] = {}
 
     if EXPORT_TXT:
-        plain_file = open(path+".txt", "w")
+        plain_file = open(path + ".txt", "w")
 
     with open(path, "rb") as trace_file:
         total_entries = os.stat(trace_file.fileno()).st_size // Trace.size
@@ -268,7 +281,9 @@ def parse(path="chattymalloc.txt",
         while entry != b'':
             # print process
             if i % update_interval == 0:
-                print(f"\r[{i} / {total_entries}] {(i/total_entries)*100:.2f}% parsed ...", end="")
+                print(
+                    f"\r[{i} / {total_entries}] {(i/total_entries)*100:.2f}% parsed ...",
+                    end="")
 
             try:
                 trace = Trace.unpack(entry)
@@ -285,11 +300,12 @@ def parse(path="chattymalloc.txt",
             except ValueError as err:
                 print(f"ERROR: {err} in entry {i}: {entry}", file=sys.stderr)
 
-
             i += 1
             entry = trace_file.read(Trace.size)
 
-    print(f"\r[{i} / {total_entries}] {(i / total_entries) * 100:.2f}% parsed ...")
+    print(
+        f"\r[{i} / {total_entries}] {(i / total_entries) * 100:.2f}% parsed ..."
+    )
     if EXPORT_TXT:
         plain_file.close()
     return context
@@ -298,23 +314,35 @@ def parse(path="chattymalloc.txt",
 def plot(path):
     """Plot a histogram and a memory profile of the given chattymalloc trace"""
     result = parse(path=path)
-    hist = result["hist"]
+    hists = result["hists"]
 
-    plot_hist_ascii(f"{path}.hist", hist, result["calls"])
+    total_hist = {}
+    for func, hist in hists.items():
+        for size in hist:
+            amount = hist[size]
+            if func == Function.realloc:
+                total_hist[size[1]] = total_hist.get(amount, 0) + 1
+            else:
+                total_hist[size] = total_hist.get(amount, 0) + 1
 
-    top5 = [t[1] for t in sorted([(n, s) for s, n in hist.items()])[-5:]]
+    plot_ascii_summary(f"{path}.hist", hists, total_hist, result["calls"])
 
-    plot_profile(path, path + ".profile.png", top5)
+    if PLOT_PROFILE:
+        top5 = [
+            t[1] for t in sorted([(n, s) for s, n in total_hist.items()])[-5:]
+        ]
+
+        plot_profile(path, path + ".profile.png", top5)
 
 
 def plot_profile(trace_path, plot_path, sizes):
     """Plot a memory profile of the total memory and the top 5 sizes"""
 
     res = parse(path=trace_path,
-                hist=False,
-                realloc_hist=False,
+                hists=False,
                 cache_lines=False,
-                req_sizes={s: [0] for s in sizes})
+                req_sizes={s: [0]
+                           for s in sizes})
 
     total_size = np.array(res["total_size"])
     del res["total_size"]
@@ -340,12 +368,8 @@ def plot_profile(trace_path, plot_path, sizes):
     plt.clf()
 
 
-def plot_hist_ascii(path, hist, calls):
-    """Plot an ascii histogram"""
-    bins = {}
-    for size in sorted(hist):
-        size_class = size // 16
-        bins[size_class] = bins.get(size_class, 0) + hist[size]
+def plot_ascii_summary(path, hists, total_hist, calls):
+    """Create an ascii summary of the trace"""
 
     with open(path, "w") as hist_file:
         print("Total function calls:", sum(calls.values()), file=hist_file)
@@ -353,39 +377,60 @@ def plot_hist_ascii(path, hist, calls):
             print(func.name, func_calls, file=hist_file)
 
         print(file=hist_file)
+        print("Histogram containing all functions:", file=hist_file)
 
-        total = sum(hist.values())
-        top10 = [t[1] for t in sorted([(n, s) for s, n in hist.items()])[-10:]]
-        top10_total = sum([hist[size] for size in top10])
+        plot_hist_ascii(hist_file, total_hist)
 
+        for func, hist in hists.items():
+            if not hist:
+                continue
+
+            # TODO: fix realloc hist
+            if func == Function.realloc:
+
+                continue
+            print(f"\nHistogram of {func}:", file=hist_file)
+            plot_hist_ascii(hist_file, hist)
+
+
+def plot_hist_ascii(hist_file, hist):
+    """Plot an ascii histogram"""
+    bins = {}
+    for size in sorted(hist):
+        size_class = size // 16
+        bins[size_class] = bins.get(size_class, 0) + hist[size]
+
+    total = sum(hist.values())
+    top10 = [t[1] for t in sorted([(n, s) for s, n in hist.items()])[-10:]]
+    top10_total = sum([hist[size] for size in top10])
+
+    print(
+        f"Top 10 allocation sizes {(top10_total/total)*100:.2f}% of all allocations",
+        file=hist_file)
+    for i, size in enumerate(reversed(top10)):
+        print(f"{i+1}. {size} B occurred {hist[size]} times", file=hist_file)
+    print(file=hist_file)
+
+    for i in [64, 1024, 4096]:
+        allocations = sum([n for s, n in hist.items() if s <= i])
         print(
-            f"Top 10 allocation sizes {(top10_total/total)*100:.2f}% of all allocations",
+            f"allocations <= {i}: {allocations} {(allocations/total)*100:.2f}%",
             file=hist_file)
-        for i, size in enumerate(reversed(top10)):
-            print(f"{i+1}. {size} B occurred {hist[size]} times",
-                  file=hist_file)
-        print(file=hist_file)
+    print(file=hist_file)
 
-        for i in [64, 1024, 4096]:
-            allocations = sum([n for s, n in hist.items() if s <= i])
-            print(
-                f"allocations <= {i}: {allocations} {(allocations/total)*100:.2f}%",
-                file=hist_file)
-        print(file=hist_file)
-
-        print("Histogram of sizes:", file=hist_file)
-        sbins = sorted(bins)
-        binmaxlength = len(str(sbins[-1])) + 1
-        amountmaxlength = str(len(str(sorted(bins.values())[-1])))
-        for current_bin in sbins:
-            perc = bins[current_bin] / total * 100
-            binsize = f"{{:<{binmaxlength}}} - {{:>{binmaxlength}}}"
-            print(binsize.format(current_bin * 16, (current_bin + 1) * 16 - 1),
-                  end=" ",
-                  file=hist_file)
-            amount = "{:<" + amountmaxlength + "} {:.2f}% {}"
-            print(amount.format(bins[current_bin], perc, '*' * int(perc / 2)),
-                  file=hist_file)
+    print("Histogram of sizes:", file=hist_file)
+    sbins = sorted(bins)
+    binmaxlength = len(str(sbins[-1])) + 1
+    amountmaxlength = str(len(str(sorted(bins.values())[-1])))
+    for current_bin in sbins:
+        perc = bins[current_bin] / total * 100
+        binsize = f"{{:<{binmaxlength}}} - {{:>{binmaxlength}}}"
+        print(binsize.format(current_bin * 16, (current_bin + 1) * 16 - 1),
+              end=" ",
+              file=hist_file)
+        amount = "{:<" + amountmaxlength + "} {:.2f}% {}"
+        print(amount.format(bins[current_bin], perc, '*' * int(perc / 2)),
+              file=hist_file)
 
 
 if __name__ == "__main__":
@@ -396,15 +441,29 @@ if __name__ == "__main__":
         )
         sys.exit(0)
 
-    parser = argparse.ArgumentParser(description="parse and analyze chattymalloc traces")
+    parser = argparse.ArgumentParser(
+        description="parse and analyze chattymalloc traces")
     parser.add_argument("trace",
                         help="binary trace file created by chattymalloc")
     parser.add_argument("--alignment",
                         nargs=2,
+                        type=int,
                         help="export to plain text format")
     parser.add_argument("--txt",
                         help="export to plain text format",
                         action="store_true")
+    parser.add_argument("--check-overlap",
+                        help="check that no allocations overlap",
+                        action="store_true")
+    parser.add_argument(
+        "--memusage",
+        help=
+        "plot a profile of the top 5 used allocation sizes similar to memusage(2)",
+        action="store_true")
+    parser.add_argument("--header-size",
+                        help="size of the allocation header",
+                        type=int,
+                        default=0)
     parser.add_argument("-v", "--verbose", help="more output", action='count')
     parser.add_argument("--license",
                         help="print license info and exit",
@@ -412,7 +471,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.alignment:
-        CHECK_ALIGNMENT = [int(x) for x in args.alignment]
+    CHECK_ALIGNMENT = args.alignment
+
     EXPORT_TXT = args.txt
+
+    CHECK_OVERLAP = args.check_overlap
+
+    HEADER_SIZE = args.header_size
+
+    PLOT_PROFILE = args.memusage
+
     plot(args.trace)
