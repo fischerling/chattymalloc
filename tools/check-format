@@ -24,3 +24,8 @@ find "${ROOTDIR}" -path "${ROOTDIR}/build*" -prune -o \
 	-type f -name '*.[c|h|cpp]' -print0 |\
 	xargs --null --max-args=3 --max-procs="${MAX_PROCS}" \
 		  clang-format --style=file --dry-run -Werror
+
+find "${ROOTDIR}" -path "${ROOTDIR}/build*" -prune -o \
+	-type f -name '*.py' -print0 |\
+	xargs --null --max-args=3 --max-procs="${MAX_PROCS}" \
+		  yapf -p -d

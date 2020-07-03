@@ -48,6 +48,7 @@ check: all check-format
 
 format: all
 	ninja -C build clang-format
+	yapf -i -p $(shell find -path "build*" -prune -o -type f -name "*.py")
 
 check-format:
 	./tools/check-format
