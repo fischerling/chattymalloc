@@ -3,7 +3,7 @@
 ## Dependencies
 
 * meson
-* (clang-format, clang-tidy)
+* (clang-format, clang-tidy, yapf)
 
 ## Compilation
 
