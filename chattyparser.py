@@ -142,6 +142,7 @@ def record_allocation(trace, context):
        trace - Trace object ro record
        context - dict holding all data structures used for parsing
            allocations - dict of life allocations mapping their pointer to their size
+           threads - set of all used tid's
            hists - dict mapping allocation sizes to their occurrence
            total_size - list of total requested memory till last recorded function call
            cache_lines - dict of cache lines mapped to the owning tids
@@ -152,6 +153,7 @@ def record_allocation(trace, context):
     allocations = context.setdefault("allocations", [])
 
     # optional
+    threads = context.get("threads", None)
     hists = context.get("hists", None)
     total_size = context.get("total_size", None)
     cache_lines = context.get("cache_lines", None)
@@ -165,6 +167,9 @@ def record_allocation(trace, context):
 
     if trace.func == Function.uninitialized:
         return "WARNING: empty entry\n"
+
+    if threads is not None:
+        threads.add(trace.tid)
 
     # (potential) free of a pointer
     if trace.func in (Function.free, Function.realloc):
@@ -231,6 +236,7 @@ def record_allocation(trace, context):
 
 def parse(path="chattymalloc.txt",
           hists=True,
+          threads=True,
           track_total=True,
           track_calls=True,
           cache_lines=False,
@@ -246,6 +252,9 @@ def parse(path="chattymalloc.txt",
 
     # Dictionary to track all live allocations
     context["allocations"] = {}
+
+    if threads:
+        context["threads"] = set()
 
     if track_calls:
         # function call histogram
@@ -325,7 +334,11 @@ def plot(path):
             else:
                 total_hist[size] = total_hist.get(amount, 0) + 1
 
-    plot_ascii_summary(f"{path}.hist", hists, total_hist, result["calls"])
+    plot_ascii_summary(f"{path}.hist",
+                       hists,
+                       total_hist,
+                       result["calls"],
+                       threads=len(result["threads"]))
 
     if PLOT_PROFILE:
         top5 = [
@@ -368,10 +381,12 @@ def plot_profile(trace_path, plot_path, sizes):
     plt.clf()
 
 
-def plot_ascii_summary(path, hists, total_hist, calls):
+def plot_ascii_summary(path, hists, total_hist, calls, threads=None):
     """Create an ascii summary of the trace"""
 
     with open(path, "w") as hist_file:
+        if threads:
+            print(f"Number of threads: {threads}\n", file=hist_file)
         print("Total function calls:", sum(calls.values()), file=hist_file)
         for func, func_calls in calls.items():
             print(func.name, func_calls, file=hist_file)
