@@ -426,6 +426,10 @@ def plot_ascii_summary(path,
             print(f"Number of threads: {threads}\n", file=hist_file)
 
         print("Total function calls:", sum(calls.values()), file=hist_file)
+        if times:
+            print(
+                f"Time spend in the allocator: {fmt_nsec(sum(times.values()))}",
+                file=hist_file)
         for func, func_calls in calls.items():
             if func == Function.uninitialized or func == Function.thread_termination:
                 continue
