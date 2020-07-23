@@ -19,6 +19,7 @@ along with chattymalloc.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <stdint.h>		 // uint8_t
 #include <sys/types.h> // pid_t
+#include <time.h>			 // pid_t
 
 enum functions {
 	UNINITIALIZED,
@@ -35,6 +36,7 @@ enum functions {
 };
 
 typedef struct trace {
+	struct timespec duration;
 	void *ptr;
 	size_t size;
 	size_t var_arg;

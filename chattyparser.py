@@ -23,11 +23,29 @@ from enum import Enum
 import os
 import struct
 import sys
+from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 HEADER_SIZE = 0
+
+
+def fmt_nsec(nanoseconds: Union[int, float]) -> str:
+    """format a time in nanoseconds into its seconds, microseconds and nanoseconds parts"""
+    total = int(nanoseconds)
+    nanoseconds = int(total % 1E3)
+    total -= nanoseconds
+    microseconds = int((total % 1E6) // 1E3)
+    total -= microseconds
+    seconds = int((total % 1E9) // 1E6)
+
+    if seconds and microseconds:
+        return f"{seconds}s:{microseconds}ms:{nanoseconds}ns"
+    elif microseconds:
+        return f"{microseconds}ms:{nanoseconds}ns"
+    else:
+        return f"{nanoseconds}ns"
 
 
 class Function(Enum):
@@ -48,10 +66,11 @@ class Function(Enum):
 class Trace:
     """Class representing the chattymalloc trace_t struct"""
 
-    fmt = 'Pnnib'
+    fmt = 'llPnnib'
     size = struct.calcsize(fmt)
 
-    def __init__(self, ptr, size, var_arg, tid, func):
+    def __init__(self, sec, nsec, ptr, size, var_arg, tid, func):
+        self.duration = sec * 1E9 + nsec
         self.ptr = ptr
         self.size = size
         self.var_arg = var_arg
@@ -74,7 +93,8 @@ class Trace:
             var_arg = hex(self.var_arg)
         else:
             var_arg = self.var_arg
-        return f"{self.tid}: {self.func.name} {hex(self.ptr)} {self.size} {var_arg}"
+        return (f"{self.tid}: {self.func.name} {hex(self.ptr)} "
+                f"{self.size} {var_arg} {fmt_nsec(self.duration)}")
 
     def get_size(self):
         """return fully calculated size of this allocation trace"""
@@ -144,6 +164,7 @@ def record_allocation(trace, context):
            allocations - dict of life allocations mapping their pointer to their size
            threads - set of all used tid's
            hists - dict mapping allocation sizes to their occurrence
+           times - dict mapping functions to their total execution times
            total_size - list of total requested memory till last recorded function call
            cache_lines - dict of cache lines mapped to the owning tids
            req_size - dict mapping sizes to their individual total requested memory
@@ -155,6 +176,7 @@ def record_allocation(trace, context):
     # optional
     threads = context.get("threads", None)
     hists = context.get("hists", None)
+    times = context.get("times", None)
     total_size = context.get("total_size", None)
     cache_lines = context.get("cache_lines", None)
     req_sizes = context.get("req_sizes", {})
@@ -167,6 +189,10 @@ def record_allocation(trace, context):
 
     if trace.func == Function.uninitialized:
         return "WARNING: empty entry\n"
+
+    # record timing information
+    if times is not None:
+        times[trace.func] = times.get(trace.func, 0) + trace.duration
 
     if threads is not None:
         threads.add(trace.tid)
@@ -236,6 +262,7 @@ def record_allocation(trace, context):
 
 def parse(path="chattymalloc.txt",
           hists=True,
+          times=True,
           threads=True,
           track_total=True,
           track_calls=True,
@@ -271,6 +298,10 @@ def parse(path="chattymalloc.txt",
     if hists:
         # Dictionary mapping functions to allocation sizes and their count
         context["hists"] = {f: {} for f in Function if f != Function.free}
+
+    if times:
+        # Dictionary mapping functions to their cumulative execution time
+        context["times"] = {}
 
     if cache_lines:
         # Dictionary mapping cache lines to their owning TIDs
@@ -338,6 +369,7 @@ def plot(path):
                        hists,
                        total_hist,
                        result["calls"],
+                       times=result["times"],
                        threads=len(result["threads"]))
 
     if PLOT_PROFILE:
@@ -381,15 +413,30 @@ def plot_profile(trace_path, plot_path, sizes):
     plt.clf()
 
 
-def plot_ascii_summary(path, hists, total_hist, calls, threads=None):
+def plot_ascii_summary(path,
+                       hists,
+                       total_hist,
+                       calls,
+                       times=None,
+                       threads=None):
     """Create an ascii summary of the trace"""
 
     with open(path, "w") as hist_file:
         if threads:
             print(f"Number of threads: {threads}\n", file=hist_file)
+
         print("Total function calls:", sum(calls.values()), file=hist_file)
         for func, func_calls in calls.items():
-            print(func.name, func_calls, file=hist_file)
+            if func == Function.uninitialized or func == Function.thread_termination:
+                continue
+
+            timing_desc = ""
+            if times and func_calls:
+                total_time = fmt_nsec(times[func])
+                avg_time = fmt_nsec(times[func] / func_calls)
+                timing_desc = f" taking {total_time} and {avg_time} on average"
+            print(f"{func.name} called {func_calls} times{timing_desc}",
+                  file=hist_file)
 
         print(file=hist_file)
         print("Histogram containing all functions:", file=hist_file)
@@ -402,8 +449,8 @@ def plot_ascii_summary(path, hists, total_hist, calls, threads=None):
 
             # TODO: fix realloc hist
             if func == Function.realloc:
-
                 continue
+
             print(f"\nHistogram of {func}:", file=hist_file)
             plot_hist_ascii(hist_file, hist)
 

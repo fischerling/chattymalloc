@@ -32,6 +32,7 @@ along with chattymalloc.  If not, see <http://www.gnu.org/licenses/>.
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #define unlikely(x) __builtin_expect((x), 0)
@@ -42,7 +43,7 @@ along with chattymalloc.  If not, see <http://www.gnu.org/licenses/>.
 #define GROWTH_ENTRIES 1000000
 
 // flag to stop recursion during bootstrap
-static int initializing = 0;
+static volatile int initializing = 0;
 
 // memory to bootstrap malloc
 static char tmpbuff[BOOTSTRAP_MEMORY_SIZE];
@@ -71,6 +72,23 @@ static __thread pid_t tid = -1;
 // thread specific key to register a destructor
 static pthread_key_t tls_key;
 static pthread_once_t tls_key_once = PTHREAD_ONCE_INIT;
+
+typedef struct timespec Time;
+
+static Time timeDuration(Time oldTime) {
+	Time duration;
+	clock_gettime(CLOCK_MONOTONIC, &duration);
+
+	if (duration.tv_nsec < oldTime.tv_nsec) {
+		duration.tv_sec -= 1;
+		duration.tv_nsec += 1E9;
+	}
+
+	duration.tv_sec -= oldTime.tv_sec;
+	duration.tv_nsec -= oldTime.tv_nsec;
+
+	return duration;
+}
 
 // log_thread_termination forward declaration because it uses trace_write
 static void log_thread_termination(void *key __attribute__((unused)));
@@ -155,12 +173,13 @@ static void grow_trace() {
 	pthread_mutex_unlock(&growth_mutex);
 }
 
-static void write_trace(char func, void *ptr, size_t size, size_t var_arg) {
+static volatile trace_t *write_trace(char func, void *ptr, size_t size, size_t var_arg,
+																		 Time duration) {
 	// Copy tid on the stack to prevent the compiler from using multiple expensive tls reads
 	pid_t ltid = tid;
 
 	if (unlikely(ltid == 0)) {
-		return;
+		return NULL;
 	}
 
 	if (unlikely(ltid == -1)) {
@@ -187,10 +206,13 @@ static void write_trace(char func, void *ptr, size_t size, size_t var_arg) {
 	trace->ptr = ptr;
 	trace->size = size;
 	trace->var_arg = var_arg;
+	trace->duration = duration;
+
+	return trace;
 }
 
 static void log_thread_termination(void *key __attribute__((unused))) {
-	write_trace(THREAD_TERMINATION, NULL, 0, 0);
+	write_trace(THREAD_TERMINATION, NULL, 0, 0, (Time){0, 0});
 	/* Don't write any traces after thread ressources are deallocated */
 	tid = 0;
 }
@@ -280,14 +302,16 @@ void *malloc(size_t size) {
 			}
 
 			fprintf(stderr, "%ld in %ld allocs\n", tmppos, tmpallocs);
-			fprintf(stderr, "jcheck: too much memory requested during initialisation - "
+			fprintf(stderr, "too much memory requested during initialisation - "
 											"increase tmpbuff size\n");
 			abort();
 		}
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_malloc(size);
-	write_trace(MALLOC, ptr, size, 0);
+	write_trace(MALLOC, ptr, size, 0, timeDuration(start));
 	return ptr;
 }
 
@@ -298,13 +322,16 @@ void free(void *ptr) {
 	}
 
 	// something is fishy if we call free before one of the allocating functions!
-	if (unlikely(next_malloc == NULL)) {
+	if (unlikely(next_malloc == NULL) && !initializing) {
 		init();
 	}
 
 	if (!(ptr >= (void *)tmpbuff && ptr <= (void *)(tmpbuff + tmppos))) {
-		write_trace(FREE, ptr, 0, 0);
+		Time start;
+		volatile trace_t *trace = write_trace(FREE, ptr, 0, 0, (Time){0, 0});
+		clock_gettime(CLOCK_MONOTONIC, &start);
 		next_free(ptr);
+		trace->duration = timeDuration(start);
 	}
 }
 
@@ -319,8 +346,10 @@ void *realloc(void *ptr, size_t size) {
 		return nptr;
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *nptr = next_realloc(ptr, size);
-	write_trace(REALLOC, nptr, size, (size_t)ptr);
+	write_trace(REALLOC, nptr, size, (size_t)ptr, timeDuration(start));
 	return nptr;
 }
 
@@ -334,8 +363,10 @@ void *calloc(size_t nmemb, size_t size) {
 		return ptr;
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_calloc(nmemb, size);
-	write_trace(CALLOC, ptr, size, nmemb);
+	write_trace(CALLOC, ptr, size, nmemb, timeDuration(start));
 	return ptr;
 }
 
@@ -345,8 +376,10 @@ void *memalign(size_t alignment, size_t size) {
 		abort();
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_memalign(alignment, size);
-	write_trace(MEMALIGN, ptr, size, alignment);
+	write_trace(MEMALIGN, ptr, size, alignment, timeDuration(start));
 	return ptr;
 }
 
@@ -356,8 +389,10 @@ int posix_memalign(void **memptr, size_t alignment, size_t size) {
 		abort();
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	int ret = next_posix_memalign(memptr, alignment, size);
-	write_trace(POSIX_MEMALIGN, *memptr, size, alignment);
+	write_trace(POSIX_MEMALIGN, *memptr, size, alignment, timeDuration(start));
 	return ret;
 }
 
@@ -367,8 +402,10 @@ void *valloc(size_t size) {
 		abort();
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_valloc(size);
-	write_trace(VALLOC, ptr, size, 0);
+	write_trace(VALLOC, ptr, size, 0, timeDuration(start));
 	return ptr;
 }
 
@@ -378,8 +415,10 @@ void *pvalloc(size_t size) {
 		abort();
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_pvalloc(size);
-	write_trace(PVALLOC, ptr, size, 0);
+	write_trace(PVALLOC, ptr, size, 0, timeDuration(start));
 	return ptr;
 }
 
@@ -389,8 +428,10 @@ void *aligned_alloc(size_t alignment, size_t size) {
 		abort();
 	}
 
+	Time start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	void *ptr = next_aligned_alloc(alignment, size);
-	write_trace(ALIGNED_ALLOC, ptr, size, alignment);
+	write_trace(ALIGNED_ALLOC, ptr, size, alignment, timeDuration(start));
 	return ptr;
 }
 
