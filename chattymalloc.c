@@ -207,7 +207,12 @@ static void __attribute__((constructor)) init() {
 	initializing = 1;
 	char *fname = getenv("CHATTYMALLOC_FILE");
 	if (fname == NULL) {
-		fname = "chattymalloc.trace";
+		fname = "chattymalloc-%d.trace";
+	}
+
+	if (asprintf(&fname, fname, getpid()) == -1) {
+		fprintf(stderr, "can't format output file name");
+		abort();
 	}
 
 	out_fd = open(fname, O_RDWR | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
