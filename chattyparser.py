@@ -36,14 +36,14 @@ def fmt_nsec(nanoseconds: Union[int, float]) -> str:
     total = int(nanoseconds)
     nanoseconds = int(total % 1E3)
     total -= nanoseconds
-    microseconds = int((total % 1E6) // 1E3)
+    microseconds = int((total % 1E9) // 1E3)
     total -= microseconds
-    seconds = int((total % 1E9) // 1E6)
+    seconds = int(total // 1E9)
 
     if seconds and microseconds:
-        return f"{seconds}s:{microseconds}ms:{nanoseconds}ns"
+        return f"{seconds}s:{microseconds}us:{nanoseconds}ns"
     elif microseconds:
-        return f"{microseconds}ms:{nanoseconds}ns"
+        return f"{microseconds}us:{nanoseconds}ns"
     else:
         return f"{nanoseconds}ns"
 
