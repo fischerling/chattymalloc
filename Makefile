@@ -43,14 +43,14 @@ else
 $(warning old mesion version $(MESON_VERSION) detected, meson >= 0.52 required for clang-tidy)
 endif
 
-check: all check-format
+check: all check-pyformat
 	ninja -C build $(CHECK_NINJA_TARGETS)
 
 format: all
 	ninja -C build clang-format
 	yapf -i -p $(shell find -path "build*" -prune -o -type f -name "*.py")
 
-check-format:
+check-pyformat:
 	./tools/check-format
 
 clean:
